@@ -13,6 +13,8 @@ use std::sync::mpsc::channel;
 
 use midir::{Ignore, MidiInput, MidiOutput, MidiOutputConnection};
 
+use anyhow::Result;
+
 const SPEAKER_SINK : &str = "alsa_output.usb-Apple__Inc._USB-C_to_3.5mm_Headphone_Jack_Adapter_DWH931705N1JKLTAL-00.analog-stereo";
 const HEADPHONE_SINK :&str = "alsa_output.usb-Apple__Inc._USB-C_to_3.5mm_Headphone_Jack_Adapter_DWH9317032QJKLTAR-00.analog-stereo";
 // const MIC_SOURCE :&str ="alsa_input.usb-Apple__Inc._USB-C_to_3.5mm_Headphone_Jack_Adapter_DWH9317032QJKLTAR-00.mono-fallback";
@@ -21,25 +23,28 @@ const HEADPHONE_SINK :&str = "alsa_output.usb-Apple__Inc._USB-C_to_3.5mm_Headpho
 const KNOB_UPDATE: u8 = 0xBA;
 // const BTN_UPDATE: u8 = 0x8A;
 
-#[derive(Debug)]
 enum SinkTarget {
-    DeviceSink(u32),
-    AppSink(u32),
+    DeviceSink(DeviceInfo),
+    AppSink(ApplicationInfo),
 }
 
+type SinkGetterResult = Result<Option<SinkTarget>>;
+
 trait SinkGetter {
-    fn get_target(&self, controller: &mut SinkController) -> Option<SinkTarget>;
+    fn get_target(&self, sink_controller: &mut SinkController) -> SinkGetterResult;
 }
 
 impl SinkGetter for ApplicationInfo {
-    fn get_target(&self, _controller: &mut SinkController) -> Option<SinkTarget> {
-        Some(SinkTarget::AppSink(self.index))
+    fn get_target(&self, sink_controller: &mut SinkController) -> SinkGetterResult {
+        let app = sink_controller.get_app_by_index(self.index)?;
+        Ok(Some(SinkTarget::AppSink(app)))
     }
 }
 
 impl SinkGetter for DeviceInfo {
-    fn get_target(&self, _controller: &mut SinkController) -> Option<SinkTarget> {
-        Some(SinkTarget::DeviceSink(self.index))
+    fn get_target(&self, sink_controller: &mut SinkController) -> SinkGetterResult {
+        let device = sink_controller.get_device_by_index(self.index)?;
+        Ok(Some(SinkTarget::DeviceSink(device)))
     }
 }
 
@@ -49,22 +54,21 @@ struct PropertyMatchSink<'a> {
 }
 
 impl PropertyMatchSink<'_> {
-    fn get_info(&self, controller: &mut SinkController) -> Option<ApplicationInfo> {
-        let apps = controller.list_applications().expect("Failed to get apps");
-        for app in apps {
-            if let Some(true) = app.proplist.get_str(self.prop).map(|v| self.value == v) {
-                return Some(app);
-            }
-        }
-        None
+    fn find_app(&self, sink_controller: &mut SinkController) -> Result<Option<ApplicationInfo>> {
+        let apps = sink_controller.list_applications()?;
+        Ok(apps.into_iter().find(|app| {
+            app.proplist
+                .get_str(self.prop)
+                .filter(|v| self.value == v)
+                .is_some()
+        }))
     }
 }
 
 impl SinkGetter for PropertyMatchSink<'_> {
-    fn get_target(&self, controller: &mut SinkController) -> Option<SinkTarget> {
-        self.get_info(controller)
-            .as_ref()
-            .map(|app| SinkTarget::AppSink(app.index))
+    fn get_target(&self, sink_controller: &mut SinkController) -> SinkGetterResult {
+        let app = self.find_app(sink_controller)?;
+        Ok(app.map(|app| SinkTarget::AppSink(app)))
     }
 }
 
@@ -72,44 +76,31 @@ type KnobIndex = u8;
 
 struct Deck {
     sink_controller: SinkController,
-    // midi_in: &'a MidiInput,
-    // midi_out: &'a RtMidiOut,
     knob_mappings: HashMap<KnobIndex, Box<dyn SinkGetter>>,
     midi_out: MidiOutputConnection,
 }
 
 impl Deck {
-    fn flush_values_to_board(&mut self) {
+    fn flush_values_to_board(&mut self) -> Result<()> {
         for (knob, getter) in self.knob_mappings.iter() {
             match getter.get_target(&mut self.sink_controller) {
-                Some(target) => {
+                Ok(Some(target)) => {
                     let vol = match target {
-                        SinkTarget::DeviceSink(index) => self
-                            .sink_controller
-                            .get_device_by_index(index)
-                            .ok()
-                            .map(|d| d.volume),
-
-                        SinkTarget::AppSink(index) => self
-                            .sink_controller
-                            .get_app_by_index(index)
-                            .ok()
-                            .map(|d| d.volume),
+                        SinkTarget::DeviceSink(device) => device.volume,
+                        SinkTarget::AppSink(app) => app.volume,
                     };
-                    if let Some(vol) = vol {
-                        let vol = vol.avg();
-                        let val: u8 = ((vol.0 * 127) / Volume::NORMAL.0) as u8;
-                        println!("Set {} to {}", knob, vol);
-                        self.midi_out.send(&[KNOB_UPDATE, *knob, val]);
-                    } else {
-                        println!("Could not get volume for {} {:?}", knob, target);
-                    }
+                    let vol = vol.avg();
+                    let val: u8 = ((vol.0 * 127) / Volume::NORMAL.0) as u8;
+                    self.midi_out.send(&[KNOB_UPDATE, *knob, val])?;
                 }
-                None => {
-                    println!("Could not get volume for {}", knob);
+                Err(e) => {
+                    println!("Could not get volume for {} : {}", knob, e);
+                    return Err(e);
                 }
+                Ok(None) => { /* It is valid for mappings not to have any current targets */ }
             }
         }
+        Ok(())
     }
 
     fn set_sink_input_volume(&mut self, index: u32, vol: &ChannelVolumes) {
@@ -120,38 +111,35 @@ impl Deck {
 
     fn knob_update(&mut self, knob: u8, value: u8) {
         if let Some(getter) = self.knob_mappings.get(&knob) {
-            if let Some(target) = getter.get_target(&mut self.sink_controller) {
-                match target {
-                    SinkTarget::DeviceSink(index) => {
-                        if let Ok(device) = self.sink_controller.get_device_by_index(index) {
-                            let mut vol = device.volume;
-                            let new_vol = value as f32 / 127.0;
-                            vol.set(
-                                vol.len(),
-                                Volume((new_vol * Volume::NORMAL.0 as f32) as u32),
-                            );
+            match getter.get_target(&mut self.sink_controller) {
+                Ok(Some(target)) => match target {
+                    SinkTarget::DeviceSink(device) => {
+                        let mut vol = device.volume;
+                        let new_vol = value as f32 / 127.0;
+                        vol.set(
+                            vol.len(),
+                            Volume((new_vol * Volume::NORMAL.0 as f32) as u32),
+                        );
 
-                            println!("Knob update {} = {} {}", knob, value, new_vol);
+                        println!("Knob update {} = {} {}", knob, value, new_vol);
 
-                            self.sink_controller.set_device_volume_by_index(index, &vol);
-
-                            // self.set_sink_volume(device.index, &vol)
-                        }
+                        self.sink_controller
+                            .set_device_volume_by_index(device.index, &vol);
                     }
-                    SinkTarget::AppSink(index) => {
-                        if let Ok(app) = self.sink_controller.get_app_by_index(index) {
-                            let mut vol = app.volume;
-                            let new_vol = value as f32 / 127.0;
-                            vol.set(
-                                vol.len(),
-                                Volume((new_vol * Volume::NORMAL.0 as f32) as u32),
-                            );
+                    SinkTarget::AppSink(app) => {
+                        let mut vol = app.volume;
+                        let new_vol = value as f32 / 127.0;
+                        vol.set(
+                            vol.len(),
+                            Volume((new_vol * Volume::NORMAL.0 as f32) as u32),
+                        );
 
-                            println!("Knob update {} = {} {}, {}", knob, value, new_vol, index);
-                            self.set_sink_input_volume(index, &vol)
-                        }
+                        println!("Knob update {} = {} {}", knob, value, new_vol);
+                        self.set_sink_input_volume(app.index, &vol)
                     }
-                }
+                },
+                Err(_) => todo!(),
+                Ok(None) => { /* It is valid for mappings not to have any current targets */ }
             }
         }
     }
@@ -171,12 +159,6 @@ enum Msg {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sink_controller = SinkController::create()?;
-
-    // let op = self
-    //     .handler
-    //     .introspect
-    //     .set_sink_volume_by_index(index, &volumes, None);
-    // self.handler.wait_for_operation(op).ok();
 
     let mut midi_in = MidiInput::new("DreamDeak in")?;
     midi_in.ignore(Ignore::None);
@@ -232,7 +214,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             tx.send(Msg::SyncBoard)
                 .expect("failed to send sync message to main thread");
-            thread::sleep(time::Duration::from_millis(10000))
+            thread::sleep(time::Duration::from_millis(100))
         }
     });
 
@@ -242,7 +224,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(msg) => match msg {
                 Msg::SyncBoard => {
                     // println!("Sync from pulse");
-                    deck.flush_values_to_board();
+                    deck.flush_values_to_board()?;
                 }
                 Msg::MidiUpdate(midi_msg) => {
                     println!("{:?}", midi_msg);

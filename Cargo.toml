@@ -9,6 +9,7 @@ edition = "2018"
 [dependencies]
 midir = "0.8.0"
 rust-pulsectl-fork = "0.2.12"
+anyhow = "1.0.0"
 
 [dependencies.pulse]
 version = "2.22.0"
