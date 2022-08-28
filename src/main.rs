@@ -5,10 +5,10 @@ use pulse::{
 };
 use std::{collections::HashMap, thread};
 
-use pulsectl::controllers::types::*;
 use pulsectl::controllers::AppControl;
 use pulsectl::controllers::DeviceControl;
 use pulsectl::controllers::SinkController;
+use pulsectl::controllers::{types::*, SourceController};
 use std::sync::mpsc::channel;
 
 use midir::{Ignore, MidiInput, MidiOutput, MidiOutputConnection};
@@ -17,34 +17,58 @@ use anyhow::{anyhow, Result};
 
 const SPEAKER_SINK : &str = "alsa_output.usb-Apple__Inc._USB-C_to_3.5mm_Headphone_Jack_Adapter_DWH931705N1JKLTAL-00.analog-stereo";
 const HEADPHONE_SINK :&str = "alsa_output.usb-Apple__Inc._USB-C_to_3.5mm_Headphone_Jack_Adapter_DWH9317032QJKLTAR-00.analog-stereo";
-// const MIC_SOURCE :&str ="alsa_input.usb-Apple__Inc._USB-C_to_3.5mm_Headphone_Jack_Adapter_DWH9317032QJKLTAR-00.mono-fallback";
+const MIC_SOURCE :&str ="alsa_input.usb-Apple__Inc._USB-C_to_3.5mm_Headphone_Jack_Adapter_DWH9317032QJKLTAR-00.mono-fallback";
 // const LINEIN_SOURCE: &str = "alsa_input.pci-0000_00_1f.3.analog-stereo";
 
 const KNOB_UPDATE: u8 = 0xBA;
-// const BTN_UPDATE: u8 = 0x8A;
+const BTN_UP: u8 = 0x8A;
+const SET_BTN: u8 = 0x9A;
 
-enum SinkTarget {
+enum Target {
     DeviceSink(DeviceInfo),
     AppSink(ApplicationInfo),
+    DeviceSource(DeviceInfo),
+    // AppSource(ApplicationInfo),
 }
 
-type SinkGetterResult = Result<Option<SinkTarget>>;
+type SinkGetterResult = Result<Option<Target>>;
 
-trait SinkGetter {
-    fn get_target(&self, sink_controller: &mut SinkController) -> SinkGetterResult;
+trait Targetable {
+    fn get_target(
+        &self,
+        sink_controller: &mut SinkController,
+        source_controller: &mut SourceController,
+    ) -> SinkGetterResult;
 }
 
-impl SinkGetter for ApplicationInfo {
-    fn get_target(&self, sink_controller: &mut SinkController) -> SinkGetterResult {
-        let app = sink_controller.get_app_by_index(self.index)?;
-        Ok(Some(SinkTarget::AppSink(app)))
+// impl Targetable for ApplicationInfo {
+//     fn get_target(&self, sink_controller: &mut SinkController) -> SinkGetterResult {
+//         let app = sink_controller.get_app_by_index(self.index)?;
+//         Ok(Some(Target::AppSink(app)))
+//     }
+// }
+
+struct StaticSinkDevice(DeviceInfo);
+impl Targetable for StaticSinkDevice {
+    fn get_target(
+        &self,
+        sink_controller: &mut SinkController,
+        _source_controller: &mut SourceController,
+    ) -> SinkGetterResult {
+        let device = sink_controller.get_device_by_index(self.0.index)?;
+        Ok(Some(Target::DeviceSink(device)))
     }
 }
 
-impl SinkGetter for DeviceInfo {
-    fn get_target(&self, sink_controller: &mut SinkController) -> SinkGetterResult {
-        let device = sink_controller.get_device_by_index(self.index)?;
-        Ok(Some(SinkTarget::DeviceSink(device)))
+struct StaticSourceDevice(DeviceInfo);
+impl Targetable for StaticSourceDevice {
+    fn get_target(
+        &self,
+        _sink_controller: &mut SinkController,
+        source_controller: &mut SourceController,
+    ) -> SinkGetterResult {
+        let device = source_controller.get_device_by_index(self.0.index)?;
+        Ok(Some(Target::DeviceSource(device)))
     }
 }
 
@@ -65,24 +89,32 @@ impl PropertyMatchSink<'_> {
     }
 }
 
-impl SinkGetter for PropertyMatchSink<'_> {
-    fn get_target(&self, sink_controller: &mut SinkController) -> SinkGetterResult {
+impl Targetable for PropertyMatchSink<'_> {
+    fn get_target(
+        &self,
+        sink_controller: &mut SinkController,
+        _source_controller: &mut SourceController,
+    ) -> SinkGetterResult {
         let app = self.find_app(sink_controller)?;
-        Ok(app.map(|app| SinkTarget::AppSink(app)))
+        Ok(app.map(|app| Target::AppSink(app)))
     }
 }
 
 struct FirstValidTarget {
-    getters: Vec<Box<dyn SinkGetter>>,
+    getters: Vec<Box<dyn Targetable>>,
 }
 
-impl SinkGetter for FirstValidTarget {
-    fn get_target(&self, sink_controller: &mut SinkController) -> SinkGetterResult {
+impl Targetable for FirstValidTarget {
+    fn get_target(
+        &self,
+        sink_controller: &mut SinkController,
+        source_controller: &mut SourceController,
+    ) -> SinkGetterResult {
         // We want to get the first non-None target but still propagate errors up
         let first_valid = self
             .getters
             .iter()
-            .map(|g| g.get_target(sink_controller))
+            .map(|g| g.get_target(sink_controller, source_controller))
             .filter(|g| g.is_err() || g.as_ref().unwrap().is_some())
             .next();
         match first_valid {
@@ -93,23 +125,27 @@ impl SinkGetter for FirstValidTarget {
 }
 
 type KnobIndex = u8;
+type BtnIndex = u8;
 
 struct Deck {
     sink_controller: SinkController,
-    knob_mappings: HashMap<KnobIndex, Box<dyn SinkGetter>>,
+    source_controller: SourceController,
+    knob_mappings: HashMap<KnobIndex, Box<dyn Targetable>>,
+    mute_mappings: HashMap<BtnIndex, Box<dyn Targetable>>,
     midi_out: MidiOutputConnection,
 }
 
 impl Deck {
     fn flush_values_to_board(&mut self) -> Result<()> {
         for (knob, getter) in self.knob_mappings.iter() {
-            match getter.get_target(&mut self.sink_controller) {
+            match getter.get_target(&mut self.sink_controller, &mut self.source_controller) {
                 Ok(Some(target)) => {
                     let vol = match target {
-                        SinkTarget::DeviceSink(device) => device.volume,
-                        SinkTarget::AppSink(app) => app.volume,
-                    };
-                    let vol = vol.avg();
+                        Target::DeviceSink(device) => device.volume,
+                        Target::DeviceSource(device) => device.volume,
+                        Target::AppSink(app) => app.volume,
+                    }
+                    .avg();
                     let val: u8 = ((vol.0 * 127) / Volume::NORMAL.0) as u8;
                     self.midi_out.send(&[KNOB_UPDATE, *knob, val])?;
                 }
@@ -120,6 +156,26 @@ impl Deck {
                 Ok(None) => { /* It is valid for mappings not to have any current targets */ }
             }
         }
+
+        for (btn, getter) in self.mute_mappings.iter() {
+            match getter.get_target(&mut self.sink_controller, &mut self.source_controller) {
+                Ok(Some(target)) => {
+                    let muted = match target {
+                        Target::DeviceSink(device) => device.mute,
+                        Target::DeviceSource(device) => device.mute,
+                        Target::AppSink(app) => app.mute,
+                    };
+                    self.midi_out
+                        .send(&[SET_BTN, *btn, if muted { 127 } else { 0 }])?;
+                }
+                Err(e) => {
+                    println!("Could not get mute state for {} : {}", btn, e);
+                    return Err(e);
+                }
+                Ok(None) => { /* It is valid for mappings not to have any current targets */ }
+            }
+        }
+
         Ok(())
     }
 
@@ -131,9 +187,9 @@ impl Deck {
 
     fn knob_update(&mut self, knob: u8, value: u8) {
         if let Some(getter) = self.knob_mappings.get(&knob) {
-            match getter.get_target(&mut self.sink_controller) {
+            match getter.get_target(&mut self.sink_controller, &mut self.source_controller) {
                 Ok(Some(target)) => match target {
-                    SinkTarget::DeviceSink(device) => {
+                    Target::DeviceSink(device) => {
                         let mut vol = device.volume;
                         let new_vol = value as f32 / 127.0;
                         vol.set(
@@ -146,7 +202,7 @@ impl Deck {
                         self.sink_controller
                             .set_device_volume_by_index(device.index, &vol);
                     }
-                    SinkTarget::AppSink(app) => {
+                    Target::AppSink(app) => {
                         let mut vol = app.volume;
                         let new_vol = value as f32 / 127.0;
                         vol.set(
@@ -157,8 +213,37 @@ impl Deck {
                         println!("Knob update {} = {} {}", knob, value, new_vol);
                         self.set_sink_input_volume(app.index, &vol)
                     }
+                    Target::DeviceSource(_) => todo!(),
                 },
                 Err(_) => todo!(),
+                Ok(None) => { /* It is valid for mappings not to have any current targets */ }
+            }
+        }
+    }
+
+    fn btn_press(&mut self, btn: u8) {
+        if let Some(getter) = self.mute_mappings.get(&btn) {
+            match getter.get_target(&mut self.sink_controller, &mut self.source_controller) {
+                Ok(Some(target)) => {
+                    match target {
+                        Target::DeviceSink(device) => {
+                            self.sink_controller
+                                .set_device_mute_by_index(device.index, !device.mute);
+                        }
+                        Target::DeviceSource(device) => {
+                            self.source_controller
+                                .set_device_mute_by_index(device.index, !device.mute);
+                        }
+                        Target::AppSink(app) => {
+                            self.sink_controller.set_app_mute(app.index, !app.mute);
+                        }
+                    };
+                }
+                Err(e) => {
+                    println!("Could not get mute state for {} : {}", btn, e);
+                    todo!();
+                    // return Err(e);
+                }
                 Ok(None) => { /* It is valid for mappings not to have any current targets */ }
             }
         }
@@ -167,21 +252,30 @@ impl Deck {
     fn midi_message(&mut self, message: &[u8]) {
         match message {
             [KNOB_UPDATE, knob, value] => self.knob_update(*knob, *value),
+            [BTN_UP, btn, _value] => self.btn_press(*btn),
             _ => println!("Unknown message: {:?}", message),
         };
     }
 }
 
 struct AlwaysNone {}
-impl SinkGetter for AlwaysNone {
-    fn get_target(&self, _sink_controller: &mut SinkController) -> SinkGetterResult {
+impl Targetable for AlwaysNone {
+    fn get_target(
+        &self,
+        _sink_controller: &mut SinkController,
+        _source_controller: &mut SourceController,
+    ) -> SinkGetterResult {
         return Ok(None);
     }
 }
 
 struct AlwaysError {}
-impl SinkGetter for AlwaysError {
-    fn get_target(&self, _sink_controller: &mut SinkController) -> SinkGetterResult {
+impl Targetable for AlwaysError {
+    fn get_target(
+        &self,
+        _sink_controller: &mut SinkController,
+        _source_controller: &mut SourceController,
+    ) -> SinkGetterResult {
         return Err(anyhow!("AlwaysError always errors"));
     }
 }
@@ -193,6 +287,7 @@ enum Msg {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sink_controller = SinkController::create()?;
+    let mut source_controller = SourceController::create()?;
 
     let mut midi_in = MidiInput::new("DreamDeak in")?;
     midi_in.ignore(Ignore::None);
@@ -205,12 +300,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let in_port_name = midi_in.port_name(&in_ports[1])?;
     println!("{}", in_port_name);
 
-    let mut mappings: HashMap<KnobIndex, Box<dyn SinkGetter>> = HashMap::new();
+    let mut knob_mappings: HashMap<KnobIndex, Box<dyn Targetable>> = HashMap::new();
     let speakers = sink_controller.get_device_by_name(SPEAKER_SINK)?;
     let headphones = sink_controller.get_device_by_name(HEADPHONE_SINK)?;
-    mappings.insert(11, Box::new(speakers));
-    mappings.insert(12, Box::new(headphones));
-    mappings.insert(
+    let mic = source_controller.get_device_by_name(MIC_SOURCE)?;
+
+    knob_mappings.insert(11, Box::new(StaticSinkDevice(speakers)));
+    knob_mappings.insert(12, Box::new(StaticSinkDevice(headphones)));
+    knob_mappings.insert(
         13,
         Box::new(FirstValidTarget {
             getters: vec![
@@ -223,6 +320,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ],
         }),
     );
+
+    let mut mute_mappings: HashMap<BtnIndex, Box<dyn Targetable>> = HashMap::new();
+    mute_mappings.insert(34, Box::new(StaticSourceDevice(mic)));
+
     // mappings.insert(14, Box::new(AlwaysError {}));
 
     let (tx, rx) = channel();
@@ -231,7 +332,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &in_ports[1],
         "DreamDeck read",
         move |stamp, message, _| {
-            println!("{}: {:?} (len = {})", stamp, message, message.len());
+            // println!("{}: {:?} (len = {})", stamp, message, message.len());
 
             midi_tx
                 .send(Msg::MidiUpdate([message[0], message[1], message[2]]))
@@ -243,10 +344,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut deck = Deck {
         sink_controller,
+        source_controller,
 
         // midi_in: &midi_in,
         // midi_out: &output,
-        knob_mappings: mappings,
+        knob_mappings,
+        mute_mappings,
         midi_out,
     };
 
@@ -268,7 +371,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     deck.flush_values_to_board()?;
                 }
                 Msg::MidiUpdate(midi_msg) => {
-                    println!("{:?}", midi_msg);
+                    // println!("{:?}", midi_msg);
                     deck.midi_message(&midi_msg);
                 }
             },
