@@ -31,6 +31,22 @@ enum Target {
     DeviceSource(DeviceInfo),
     // AppSource(ApplicationInfo),
 }
+impl Target {
+    fn is_muted(&self) -> bool {
+        match self {
+            Target::DeviceSink(device) => device.mute,
+            Target::DeviceSource(device) => device.mute,
+            Target::AppSink(app) => app.mute,
+        }
+    }
+    fn volume(&self) -> ChannelVolumes {
+        match self {
+            Target::DeviceSink(device) => device.volume,
+            Target::DeviceSource(device) => device.volume,
+            Target::AppSink(app) => app.volume,
+        }
+    }
+}
 
 type SinkGetterResult = Result<Option<Target>>;
 
@@ -47,6 +63,21 @@ enum Binding {
     MuteToggle(Box<dyn Targetable>),
     DefaultSelect(Box<dyn Targetable>),
 }
+impl Binding {
+    pub fn volume<T: Targetable + 'static>(t: T) -> Binding {
+        VolumeControl(Box::new(t))
+    }
+}
+impl Binding {
+    pub fn mute<T: Targetable + 'static>(t: T) -> Binding {
+        MuteToggle(Box::new(t))
+    }
+}
+impl Binding {
+    pub fn select<T: Targetable + 'static>(t: T) -> Binding {
+        Self::DefaultSelect(Box::new(t))
+    }
+}
 
 // impl Targetable for ApplicationInfo {
 //     fn get_target(&self, sink_controller: &mut SinkController) -> SinkGetterResult {
@@ -55,32 +86,41 @@ enum Binding {
 //     }
 // }
 
-struct StaticSinkDevice(DeviceInfo);
-impl Targetable for StaticSinkDevice {
+struct Sink(u32);
+impl Targetable for Sink {
     fn get_target(
         &self,
         sink_controller: &mut SinkController,
         _source_controller: &mut SourceController,
     ) -> SinkGetterResult {
-        let device = sink_controller.get_device_by_index(self.0.index)?;
+        let device = sink_controller.get_device_by_index(self.0)?;
         Ok(Some(Target::DeviceSink(device)))
     }
 }
+impl From<&DeviceInfo> for Sink {
+    fn from(d: &DeviceInfo) -> Self {
+        Self(d.index)
+    }
+}
 
-struct StaticSourceDevice(DeviceInfo);
-impl Targetable for StaticSourceDevice {
+struct Source(u32);
+impl Targetable for Source {
     fn get_target(
         &self,
         _sink_controller: &mut SinkController,
         source_controller: &mut SourceController,
     ) -> SinkGetterResult {
-        let device = source_controller.get_device_by_index(self.0.index)?;
+        let device = source_controller.get_device_by_index(self.0)?;
         Ok(Some(Target::DeviceSource(device)))
+    }
+}
+impl From<&DeviceInfo> for Source {
+    fn from(d: &DeviceInfo) -> Self {
+        Self(d.index)
     }
 }
 
 struct PropertyMatchSink<'a>(&'a str, &'a str);
-
 impl PropertyMatchSink<'_> {
     fn find_app(&self, sink_controller: &mut SinkController) -> Result<Option<ApplicationInfo>> {
         let apps = sink_controller.list_applications()?;
@@ -91,8 +131,10 @@ impl PropertyMatchSink<'_> {
                 .is_some()
         }))
     }
+    pub fn app_name(name: &'static str) -> Box<Self> {
+        Box::new(PropertyMatchSink(properties::APPLICATION_NAME, name))
+    }
 }
-
 impl Targetable for PropertyMatchSink<'_> {
     fn get_target(
         &self,
@@ -105,7 +147,6 @@ impl Targetable for PropertyMatchSink<'_> {
 }
 
 struct FirstValidTarget(Vec<Box<dyn Targetable>>);
-
 impl Targetable for FirstValidTarget {
     fn get_target(
         &self,
@@ -126,6 +167,21 @@ impl Targetable for FirstValidTarget {
     }
 }
 
+trait SinkControllerExt {
+    fn set_sink_input_volume(&mut self, index: u32, vol: &ChannelVolumes) -> Result<()>;
+}
+impl SinkControllerExt for SinkController {
+    fn set_sink_input_volume(&mut self, index: u32, vol: &ChannelVolumes) -> Result<()> {
+        let op = self
+            .handler
+            .introspect
+            .set_sink_input_volume(index, vol, None);
+        self.handler
+            .wait_for_operation(op)
+            .map_err(|_| anyhow!("Failed to set sink input volume"))
+    }
+}
+
 struct Deck {
     sink: SinkController,
     source: SourceController,
@@ -143,12 +199,7 @@ impl Deck {
                     let knob = *control;
                     match getter.get_target(&mut self.sink, &mut self.source) {
                         Ok(Some(target)) => {
-                            let vol = match target {
-                                Target::DeviceSink(device) => device.volume,
-                                Target::DeviceSource(device) => device.volume,
-                                Target::AppSink(app) => app.volume,
-                            }
-                            .avg();
+                            let vol = target.volume().avg();
                             let val: u8 = ((vol.0 * 127) / Volume::NORMAL.0) as u8;
                             self.midi_out.send(&[KNOB_UPDATE, knob, val])?;
                         }
@@ -165,13 +216,8 @@ impl Deck {
                     let btn = *control;
                     match getter.get_target(&mut self.sink, &mut self.source) {
                         Ok(Some(target)) => {
-                            let muted = match target {
-                                Target::DeviceSink(device) => device.mute,
-                                Target::DeviceSource(device) => device.mute,
-                                Target::AppSink(app) => app.mute,
-                            };
                             self.midi_out
-                                .send(&[BTN_DOWN, btn, if muted { 1 } else { 0 }])?;
+                                .send(&[BTN_DOWN, btn, target.is_muted() as u8])?;
                         }
                         Ok(None) => {
                             self.midi_out.send(&[BTN_DOWN, btn, 0])?;
@@ -215,12 +261,6 @@ impl Deck {
         Ok(())
     }
 
-    fn set_sink_input_volume(&mut self, index: u32, vol: &ChannelVolumes) {
-        let handler = &mut self.sink.handler;
-        let op = handler.introspect.set_sink_input_volume(index, vol, None);
-        handler.wait_for_operation(op).ok();
-    }
-
     fn knob_update(&mut self, knob: u8, value: u8) -> Result<()> {
         if let Some(binding) = self.bindings.get(&knob) {
             if let VolumeControl(getter) = binding {
@@ -242,7 +282,7 @@ impl Deck {
                                 vol.len(),
                                 Volume((new_vol * Volume::NORMAL.0 as f32) as u32),
                             );
-                            self.set_sink_input_volume(app.index, &vol)
+                            self.sink.set_sink_input_volume(app.index, &vol)?;
                         }
                         Target::DeviceSource(_) => todo!(),
                     },
@@ -376,44 +416,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mic = source_controller.get_device_by_name(MIC_SOURCE)?;
 
     let mut b = HashMap::new();
-    b.insert(
-        11,
-        VolumeControl(Box::new(StaticSinkDevice(speakers.clone()))),
-    );
-    b.insert(
-        12,
-        VolumeControl(Box::new(StaticSinkDevice(headphones.clone()))),
-    );
+    b.insert(11, Binding::volume(Sink::from(&speakers)));
+    b.insert(12, Binding::volume(Sink::from(&headphones)));
     b.insert(
         13,
-        VolumeControl(Box::new(FirstValidTarget(vec![
+        Binding::volume(FirstValidTarget(vec![
             Box::new(AlwaysNone {}),
             // Box::new(AlwaysError {}),
-            Box::new(PropertyMatchSink(properties::APPLICATION_NAME, "Firefox")),
-        ]))),
+            PropertyMatchSink::app_name("Firefox"),
+        ])),
     );
-    b.insert(
-        32,
-        DefaultSelect(Box::new(StaticSinkDevice(speakers.clone()))),
-    );
-    b.insert(
-        33,
-        DefaultSelect(Box::new(StaticSinkDevice(headphones.clone()))),
-    );
-    b.insert(34, MuteToggle(Box::new(StaticSourceDevice(mic))));
+    b.insert(32, Binding::select(Sink::from(&speakers)));
+    b.insert(33, Binding::select(Sink::from(&headphones)));
+    b.insert(34, Binding::mute(Source::from(&mic)));
 
-    b.insert(40, MuteToggle(Box::new(StaticSinkDevice(speakers.clone()))));
-    b.insert(
-        41,
-        MuteToggle(Box::new(StaticSinkDevice(headphones.clone()))),
-    );
+    b.insert(40, Binding::mute(Sink::from(&speakers)));
+    b.insert(41, Binding::mute(Sink::from(&headphones)));
     b.insert(
         42,
-        MuteToggle(Box::new(FirstValidTarget(vec![
+        Binding::mute(FirstValidTarget(vec![
             Box::new(AlwaysNone {}),
             // Box::new(AlwaysError {}),
-            Box::new(PropertyMatchSink(properties::APPLICATION_NAME, "Firefox")),
-        ]))),
+            PropertyMatchSink::app_name("Firefox"),
+        ])),
     );
 
     // mappings.insert(14, Box::new(AlwaysError {}));
