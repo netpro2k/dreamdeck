@@ -13,7 +13,7 @@ use std::sync::mpsc::channel;
 
 use midir::{Ignore, MidiInput, MidiOutput, MidiOutputConnection};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 const SPEAKER_SINK : &str = "alsa_output.usb-Apple__Inc._USB-C_to_3.5mm_Headphone_Jack_Adapter_DWH931705N1JKLTAL-00.analog-stereo";
 const HEADPHONE_SINK :&str = "alsa_output.usb-Apple__Inc._USB-C_to_3.5mm_Headphone_Jack_Adapter_DWH9317032QJKLTAR-00.analog-stereo";
@@ -69,6 +69,26 @@ impl SinkGetter for PropertyMatchSink<'_> {
     fn get_target(&self, sink_controller: &mut SinkController) -> SinkGetterResult {
         let app = self.find_app(sink_controller)?;
         Ok(app.map(|app| SinkTarget::AppSink(app)))
+    }
+}
+
+struct FirstValidTarget {
+    getters: Vec<Box<dyn SinkGetter>>,
+}
+
+impl SinkGetter for FirstValidTarget {
+    fn get_target(&self, sink_controller: &mut SinkController) -> SinkGetterResult {
+        // We want to get the first non-None target but still propagate errors up
+        let first_valid = self
+            .getters
+            .iter()
+            .map(|g| g.get_target(sink_controller))
+            .filter(|g| g.is_err() || g.as_ref().unwrap().is_some())
+            .next();
+        match first_valid {
+            Some(r) => r,
+            None => Ok(None),
+        }
     }
 }
 
@@ -152,6 +172,20 @@ impl Deck {
     }
 }
 
+struct AlwaysNone {}
+impl SinkGetter for AlwaysNone {
+    fn get_target(&self, _sink_controller: &mut SinkController) -> SinkGetterResult {
+        return Ok(None);
+    }
+}
+
+struct AlwaysError {}
+impl SinkGetter for AlwaysError {
+    fn get_target(&self, _sink_controller: &mut SinkController) -> SinkGetterResult {
+        return Err(anyhow!("AlwaysError always errors"));
+    }
+}
+
 enum Msg {
     SyncBoard,
     MidiUpdate([u8; 3]),
@@ -178,11 +212,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     mappings.insert(12, Box::new(headphones));
     mappings.insert(
         13,
-        Box::new(PropertyMatchSink {
-            prop: properties::APPLICATION_NAME,
-            value: "Firefox",
+        Box::new(FirstValidTarget {
+            getters: vec![
+                Box::new(AlwaysNone {}),
+                // Box::new(AlwaysError {}),
+                Box::new(PropertyMatchSink {
+                    prop: properties::APPLICATION_NAME,
+                    value: "Firefox",
+                }),
+            ],
         }),
     );
+    // mappings.insert(14, Box::new(AlwaysError {}));
 
     let (tx, rx) = channel();
     let midi_tx = tx.clone();
