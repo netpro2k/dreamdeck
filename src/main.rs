@@ -33,31 +33,63 @@ fn make_config(
     let headphones = sink_controller.get_device_by_name(HEADPHONE_SINK)?;
     let mic = source_controller.get_device_by_name(MIC_SOURCE)?;
 
-    Ok(HashMap::from([
+    let mut bindings = HashMap::from([
         (11, Binding::volume(Sink::from(&speakers))),
         (12, Binding::volume(Sink::from(&headphones))),
         (
             13,
             Binding::volume(FirstValidTarget::new(vec![
-                Box::new(AlwaysNone {}),
-                // Box::new(AlwaysError {}),
-                PropertyMatchSink::app_name("Firefox"),
+                PropertyMatchSink::app_name("WEBRTC VoiceEngine"), // Discord
+                PropertyMatchSink::app_name("ZOOM VoiceEngine"),
             ])),
+        ),
+        (
+            14,
+            Binding::volume(FirstValidTarget::new(vec![
+                // TODO control multiple targets with 1 knob/button
+                //             sink_getter_all_by_property("application.name", "FINAL FANTASY XIV"),
+                PropertyMatchSink::app_name("ALSA plug-in [wine64-preloader]"),
+                PropertyMatchSink::app_name("Among Us.exe"),
+                PropertyMatchSink::app_name("Spel2.exe"), // Spelunky 2
+                PropertyMatchSink::app_name("FMOD Ex App"),
+                PropertyMatchSink::app_name("Risk of Rain 2.exe"),
+                PropertyMatchSink::process_binary("DyingLightGame"),
+                // Generic games running under wine
+                PropertyMatchSink::app_name("wine-preloader"),
+                PropertyMatchSink::app_name("wine64-preloader"),
+                PropertyMatchSink::process_binary("wine-preloader"),
+                PropertyMatchSink::process_binary("wine64-preloader"),
+                // Steam Streaming
+                PropertyMatchSink::process_binary("streaming_client"),
+            ])),
+        ),
+        (
+            15,
+            Binding::volume(FirstValidTarget::new(vec![
+                PropertyMatchSink::app_name("Google Play Music Desktop Player"),
+                PropertyMatchSink::app_name("mpv Media Player"),
+            ])),
+        ),
+        (
+            16,
+            Binding::volume(*PropertyMatchSink::media_name("Loopback of Onboard Audio")),
+        ),
+        (
+            17,
+            Binding::volume(*PropertyMatchSink::app_name("Moonlight")),
         ),
         (32, Binding::select(Sink::from(&speakers))),
         (33, Binding::select(Sink::from(&headphones))),
         (34, Binding::mute(Source::from(&mic))),
-        (40, Binding::mute(Sink::from(&speakers))),
-        (41, Binding::mute(Sink::from(&headphones))),
-        (
-            42,
-            Binding::mute(FirstValidTarget::new(vec![
-                Box::new(AlwaysNone {}),
-                // Box::new(AlwaysError {}),
-                PropertyMatchSink::app_name("Firefox"),
-            ])),
-        ),
-    ]))
+    ]);
+
+    // Bind the bottom row of buttons to mute the thing the knob in that column controls the volume of
+    for i in 0..=6 {
+        println!("Binding {} to mute {}", 40 + i, 11 + i);
+        bindings.insert(40 + i, bindings.get(&(11 + i)).unwrap().to_mute());
+    }
+
+    Ok(bindings)
 }
 
 enum Msg {

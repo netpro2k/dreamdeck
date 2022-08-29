@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use dyn_clonable::*;
 use pulse::volume::ChannelVolumes;
 use pulsectl::controllers::{
     types::{ApplicationInfo, DeviceInfo},
@@ -30,7 +31,8 @@ impl Target {
 
 pub type TargetableResult = Result<Option<Target>>;
 
-pub trait Targetable {
+#[clonable]
+pub trait Targetable: Clone {
     fn get_target(
         &self,
         sink_controller: &mut SinkController,
@@ -38,6 +40,7 @@ pub trait Targetable {
     ) -> TargetableResult;
 }
 
+#[derive(Clone)]
 pub struct Sink(u32);
 impl Targetable for Sink {
     fn get_target(
@@ -55,6 +58,7 @@ impl From<&DeviceInfo> for Sink {
     }
 }
 
+#[derive(Clone)]
 pub struct Source(u32);
 impl Targetable for Source {
     fn get_target(
@@ -72,6 +76,7 @@ impl From<&DeviceInfo> for Source {
     }
 }
 
+#[derive(Clone)]
 pub struct PropertyMatchSink<'a>(&'a str, &'a str);
 impl PropertyMatchSink<'_> {
     fn find_app(&self, sink_controller: &mut SinkController) -> Result<Option<ApplicationInfo>> {
@@ -89,6 +94,18 @@ impl PropertyMatchSink<'_> {
             name,
         ))
     }
+    pub fn process_binary(name: &'static str) -> Box<Self> {
+        Box::new(PropertyMatchSink(
+            pulse::proplist::properties::APPLICATION_PROCESS_BINARY,
+            name,
+        ))
+    }
+    pub fn media_name(name: &'static str) -> Box<Self> {
+        Box::new(PropertyMatchSink(
+            pulse::proplist::properties::MEDIA_NAME,
+            name,
+        ))
+    }
 }
 impl Targetable for PropertyMatchSink<'_> {
     fn get_target(
@@ -101,6 +118,7 @@ impl Targetable for PropertyMatchSink<'_> {
     }
 }
 
+#[derive(Clone)]
 pub struct FirstValidTarget(Vec<Box<dyn Targetable>>);
 impl FirstValidTarget {
     pub fn new(t: Vec<Box<dyn Targetable>>) -> Self {
@@ -142,6 +160,7 @@ impl SinkControllerExt for SinkController {
     }
 }
 
+#[derive(Clone)]
 pub struct AlwaysNone {}
 impl Targetable for AlwaysNone {
     fn get_target(
@@ -153,6 +172,7 @@ impl Targetable for AlwaysNone {
     }
 }
 
+#[derive(Clone)]
 pub struct AlwaysError {}
 impl Targetable for AlwaysError {
     fn get_target(

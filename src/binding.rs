@@ -9,14 +9,19 @@ impl Binding {
     pub fn volume<T: Targetable + 'static>(t: T) -> Binding {
         Self::VolumeControl(Box::new(t))
     }
-}
-impl Binding {
     pub fn mute<T: Targetable + 'static>(t: T) -> Binding {
         Self::MuteToggle(Box::new(t))
     }
-}
-impl Binding {
     pub fn select<T: Targetable + 'static>(t: T) -> Binding {
         Self::DefaultSelect(Box::new(t))
+    }
+
+    pub fn to_mute(&self) -> Self {
+        let v = match self {
+            Binding::VolumeControl(t) => t,
+            Binding::MuteToggle(t) => t,
+            Binding::DefaultSelect(t) => t,
+        };
+        Self::MuteToggle(v.clone())
     }
 }
