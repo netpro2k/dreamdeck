@@ -41,8 +41,8 @@ pub trait Targetable: Clone {
 }
 
 #[derive(Clone)]
-pub struct Sink(u32);
-impl Targetable for Sink {
+pub struct StaticSink(u32);
+impl Targetable for StaticSink {
     fn get_target(
         &self,
         sink_controller: &mut SinkController,
@@ -52,15 +52,15 @@ impl Targetable for Sink {
         Ok(Some(Target::DeviceSink(device)))
     }
 }
-impl From<&DeviceInfo> for Sink {
+impl From<&DeviceInfo> for StaticSink {
     fn from(d: &DeviceInfo) -> Self {
         Self(d.index)
     }
 }
 
 #[derive(Clone)]
-pub struct Source(u32);
-impl Targetable for Source {
+pub struct StaticSource(u32);
+impl Targetable for StaticSource {
     fn get_target(
         &self,
         _sink_controller: &mut SinkController,
@@ -70,15 +70,15 @@ impl Targetable for Source {
         Ok(Some(Target::DeviceSource(device)))
     }
 }
-impl From<&DeviceInfo> for Source {
+impl From<&DeviceInfo> for StaticSource {
     fn from(d: &DeviceInfo) -> Self {
         Self(d.index)
     }
 }
 
 #[derive(Clone)]
-pub struct PropertyMatchSink<'a>(&'a str, &'a str);
-impl PropertyMatchSink<'_> {
+pub struct SinkWithProperty<'a>(&'a str, &'a str);
+impl SinkWithProperty<'_> {
     fn find_app(&self, sink_controller: &mut SinkController) -> Result<Option<ApplicationInfo>> {
         let apps = sink_controller.list_applications()?;
         Ok(apps.into_iter().find(|app| {
@@ -89,25 +89,25 @@ impl PropertyMatchSink<'_> {
         }))
     }
     pub fn app_name(name: &'static str) -> Box<Self> {
-        Box::new(PropertyMatchSink(
+        Box::new(SinkWithProperty(
             pulse::proplist::properties::APPLICATION_NAME,
             name,
         ))
     }
     pub fn process_binary(name: &'static str) -> Box<Self> {
-        Box::new(PropertyMatchSink(
+        Box::new(SinkWithProperty(
             pulse::proplist::properties::APPLICATION_PROCESS_BINARY,
             name,
         ))
     }
     pub fn media_name(name: &'static str) -> Box<Self> {
-        Box::new(PropertyMatchSink(
+        Box::new(SinkWithProperty(
             pulse::proplist::properties::MEDIA_NAME,
             name,
         ))
     }
 }
-impl Targetable for PropertyMatchSink<'_> {
+impl Targetable for SinkWithProperty<'_> {
     fn get_target(
         &self,
         sink_controller: &mut SinkController,
