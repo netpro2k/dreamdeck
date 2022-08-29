@@ -33,6 +33,14 @@ fn make_config(
     let headphones = sink_controller.get_device_by_name(HEADPHONE_SINK)?;
     let mic = source_controller.get_device_by_name(MIC_SOURCE)?;
 
+    // Layer B
+    //
+    // (11) (12) (13) (14) (15) (16) (17) (18)  Knob Turn
+    // [24] [25] [26] [27] [28] [29] [30] [31]  Knob Press
+    //
+    // [32] [33] [34] [35] [36] [37] [38] [39]  Buttons
+    // [40] [41] [42] [43] [44] [45] [46] [47]
+
     let mut bindings = HashMap::from([
         (11, Binding::volume(StaticSink::from(&speakers))),
         (12, Binding::volume(StaticSink::from(&headphones))),
