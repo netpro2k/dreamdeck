@@ -33,7 +33,15 @@ impl Target {
                 }
                 Ok(None)
             }
-            Target::All(_) => todo!(),
+            Target::All(targets) => {
+                // Just return the first one as we want them to all be synced
+                for t in targets {
+                    if let Some(v) = t.volume(sink, source)? {
+                        return Ok(Some(v));
+                    }
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -83,7 +91,10 @@ impl Target {
                 }
                 Ok(None)
             }
-            Target::All(_) => todo!(),
+            Target::All(targets) => targets
+                .iter()
+                .map(|t| t.set_volume(sink, source, new_vol))
+                .collect(),
         }
     }
 
@@ -106,7 +117,15 @@ impl Target {
                 }
                 Ok(None)
             }
-            Target::All(_) => todo!(),
+            Target::All(targets) => {
+                // Just return the first one as we want them to all be synced
+                for t in targets {
+                    if let Some(v) = t.muted(sink, source)? {
+                        return Ok(Some(v));
+                    }
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -119,7 +138,6 @@ impl Target {
             Target::StaticSink(idx) => {
                 let is_muted = sink.get_device_by_index(*idx)?.mute;
                 sink.set_device_mute_by_index(*idx, !is_muted);
-
                 Ok(Some(()))
             }
             Target::StaticSource(idx) => {
@@ -145,7 +163,10 @@ impl Target {
                 }
                 Ok(None)
             }
-            Target::All(_) => todo!(),
+            Target::All(targets) => targets
+                .iter()
+                .map(|t| t.toggle_muted(sink, source))
+                .collect(),
         }
     }
 

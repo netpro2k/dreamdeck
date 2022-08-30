@@ -89,6 +89,13 @@ fn make_config(
             17,
             Binding::volume(SinkWithProperty(APPLICATION_NAME, "Moonlight")),
         ),
+        // (
+        //     18,
+        //     Binding::volume(All(vec![
+        //         StaticSink(speakers.index),
+        //         StaticSink(headphones.index),
+        //     ])),
+        // ),
         (32, Binding::select(StaticSink(speakers.index))),
         (33, Binding::select(StaticSink(headphones.index))),
         (34, Binding::mute(StaticSource(mic.index))),
@@ -98,6 +105,7 @@ fn make_config(
     for i in 0..=6 {
         bindings.insert(40 + i, bindings.get(&(11 + i)).unwrap().to_mute());
     }
+    // bindings.insert(47, bindings.get(&(18)).unwrap().to_mute());
 
     Ok(bindings)
 }
