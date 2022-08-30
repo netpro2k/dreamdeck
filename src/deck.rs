@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
 use midir::MidiOutputConnection;
-use pulse::volume::{Volume};
+use pulse::volume::Volume;
 use pulsectl::controllers::{SinkController, SourceController};
 
 use crate::{binding::Binding, binding::Binding::*};
@@ -33,6 +33,16 @@ impl Deck {
             bindings,
             midi_out,
         }
+    }
+
+    pub fn clear(&mut self) -> Result<()> {
+        for i in 11..=18 {
+            self.midi_out.send(&[KNOB_UPDATE, i, 0])?;
+        }
+        for i in 24..=47 {
+            self.midi_out.send(&[BTN_DOWN, i, 0])?;
+        }
+        Ok(())
     }
 
     pub fn flush_values_to_board(&mut self) -> Result<()> {

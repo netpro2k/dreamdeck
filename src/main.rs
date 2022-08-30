@@ -140,6 +140,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (),
     )?;
 
+    let mut sink_controller = SinkController::create()?;
+    let mut source_controller = SourceController::create()?;
+    let bindings = make_config(&mut sink_controller, &mut source_controller)?;
+    let mut deck = Deck::new(sink_controller, source_controller, midi_out, bindings);
+    deck.clear()?;
+
     let _poll_thread = thread::spawn(move || {
         // thread code
         loop {
@@ -148,11 +154,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             thread::sleep(time::Duration::from_millis(100))
         }
     });
-
-    let mut sink_controller = SinkController::create()?;
-    let mut source_controller = SourceController::create()?;
-    let bindings = make_config(&mut sink_controller, &mut source_controller)?;
-    let mut deck = Deck::new(sink_controller, source_controller, midi_out, bindings);
 
     loop {
         let msg = rx.recv();
