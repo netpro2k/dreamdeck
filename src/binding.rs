@@ -1,27 +1,38 @@
-use crate::Targetable;
+use crate::target::Target;
 
 pub enum Binding {
-    VolumeControl(Box<dyn Targetable>),
-    MuteToggle(Box<dyn Targetable>),
-    DefaultSelect(Box<dyn Targetable>),
+    VolumeControl(Target),
+    MuteToggle(Target),
+    DefaultSelect(Target),
 }
+
 impl Binding {
-    pub fn volume<T: Targetable + 'static>(t: T) -> Binding {
-        Self::VolumeControl(Box::new(t))
+    pub fn volume(t: Target) -> Binding {
+        Self::VolumeControl(t)
     }
-    pub fn mute<T: Targetable + 'static>(t: T) -> Binding {
-        Self::MuteToggle(Box::new(t))
+    pub fn mute(t: Target) -> Binding {
+        Self::MuteToggle(t)
     }
-    pub fn select<T: Targetable + 'static>(t: T) -> Binding {
-        Self::DefaultSelect(Box::new(t))
+    pub fn select(t: Target) -> Binding {
+        Self::DefaultSelect(t)
     }
 
     pub fn to_mute(&self) -> Self {
-        let v = match self {
+        let t = match self {
             Binding::VolumeControl(t) => t,
             Binding::MuteToggle(t) => t,
             Binding::DefaultSelect(t) => t,
         };
-        Self::MuteToggle(v.clone())
+        Self::MuteToggle(t.clone())
+    }
+
+    #[allow(dead_code)]
+    pub fn to_volume(&self) -> Self {
+        let t = match self {
+            Binding::VolumeControl(t) => t,
+            Binding::MuteToggle(t) => t,
+            Binding::DefaultSelect(t) => t,
+        };
+        Self::VolumeControl(t.clone())
     }
 }

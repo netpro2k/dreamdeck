@@ -1,147 +1,209 @@
 use anyhow::{anyhow, Result};
-use dyn_clonable::*;
-use pulse::volume::ChannelVolumes;
+use pulse::volume::{ChannelVolumes, Volume};
 use pulsectl::controllers::{
-    types::{ApplicationInfo, DeviceInfo},
-    AppControl, DeviceControl, SinkController, SourceController,
+    types::ApplicationInfo, AppControl, DeviceControl, SinkController, SourceController,
 };
 
+#[derive(Clone)]
 pub enum Target {
-    DeviceSink(DeviceInfo),
-    AppSink(ApplicationInfo),
-    DeviceSource(DeviceInfo),
-    // AppSource(ApplicationInfo),
+    StaticSink(u32),
+    StaticSource(u32),
+    SinkWithProperty(&'static str, &'static str),
+    Any(Vec<Target>),
+    All(Vec<Target>),
 }
+
 impl Target {
-    pub fn is_muted(&self) -> bool {
+    pub fn volume(
+        &self,
+        sink: &mut SinkController,
+        source: &mut SourceController,
+    ) -> Result<Option<Volume>> {
         match self {
-            Target::DeviceSink(device) => device.mute,
-            Target::DeviceSource(device) => device.mute,
-            Target::AppSink(app) => app.mute,
+            Target::StaticSink(idx) => Ok(Some(sink.get_device_by_index(*idx)?.volume.avg())),
+            Target::StaticSource(idx) => Ok(Some(source.get_device_by_index(*idx)?.volume.avg())),
+            Target::SinkWithProperty(p, v) => {
+                Ok(Self::find_app(p, v, sink)?.map(|a| a.volume.avg()))
+            }
+            Target::Any(targets) => {
+                for t in targets {
+                    if let Some(v) = t.volume(sink, source)? {
+                        return Ok(Some(v));
+                    }
+                }
+                Ok(None)
+            }
+            Target::All(_) => todo!(),
         }
     }
-    pub fn volume(&self) -> ChannelVolumes {
+
+    pub fn set_volume(
+        &self,
+        sink: &mut SinkController,
+        source: &mut SourceController,
+        new_vol: f32,
+    ) -> Result<Option<()>> {
         match self {
-            Target::DeviceSink(device) => device.volume,
-            Target::DeviceSource(device) => device.volume,
-            Target::AppSink(app) => app.volume,
+            Target::StaticSink(idx) => {
+                let mut vol = sink.get_device_by_index(*idx)?.volume;
+                vol.set(
+                    vol.len(),
+                    Volume((new_vol * (Volume::NORMAL.0 - 1) as f32) as u32),
+                );
+                sink.set_device_volume_by_index(*idx, &vol);
+                Ok(Some(()))
+            }
+            Target::StaticSource(idx) => {
+                let mut vol = sink.get_app_by_index(*idx)?.volume;
+                vol.set(
+                    vol.len(),
+                    Volume((new_vol * (Volume::NORMAL.0 - 1) as f32) as u32),
+                );
+                sink.set_sink_input_volume(*idx, &vol)?;
+                Ok(Some(()))
+            }
+            Target::SinkWithProperty(p, v) => {
+                if let Some(app) = Self::find_app(p, v, sink)? {
+                    let mut vol = app.volume;
+                    vol.set(
+                        vol.len(),
+                        Volume((new_vol * (Volume::NORMAL.0 - 1) as f32) as u32),
+                    );
+                    sink.set_sink_input_volume(app.index, &vol)?;
+                    Ok(Some(()))
+                } else {
+                    Ok(None)
+                }
+            }
+            Target::Any(targets) => {
+                for t in targets {
+                    if let Some(v) = t.set_volume(sink, source, new_vol)? {
+                        return Ok(Some(v));
+                    }
+                }
+                Ok(None)
+            }
+            Target::All(_) => todo!(),
+        }
+    }
+
+    pub fn muted(
+        &self,
+        sink: &mut SinkController,
+        source: &mut SourceController,
+    ) -> Result<Option<bool>> {
+        match self {
+            Target::StaticSink(idx) => Ok(Some(sink.get_device_by_index(*idx).unwrap().mute)),
+            Target::StaticSource(idx) => Ok(Some(source.get_device_by_index(*idx).unwrap().mute)),
+            Target::SinkWithProperty(p, v) => {
+                Ok(Self::find_app(p, v, sink).unwrap().map(|a| a.mute))
+            }
+            Target::Any(targets) => {
+                for t in targets {
+                    if let Some(v) = t.muted(sink, source).unwrap() {
+                        return Ok(Some(v));
+                    }
+                }
+                Ok(None)
+            }
+            Target::All(_) => todo!(),
+        }
+    }
+
+    pub fn toggle_muted(
+        &self,
+        sink: &mut SinkController,
+        source: &mut SourceController,
+    ) -> Result<Option<()>> {
+        match self {
+            Target::StaticSink(idx) => {
+                let is_muted = sink.get_device_by_index(*idx)?.mute;
+                sink.set_device_mute_by_index(*idx, !is_muted);
+
+                Ok(Some(()))
+            }
+            Target::StaticSource(idx) => {
+                let is_muted = source.get_device_by_index(*idx)?.mute;
+                source.set_device_mute_by_index(*idx, !is_muted);
+                Ok(Some(()))
+            }
+            Target::SinkWithProperty(p, v) => {
+                if let Some(app) = Self::find_app(p, v, sink)? {
+                    let idx = app.index;
+                    let is_muted = sink.get_app_by_index(idx)?.mute;
+                    sink.set_app_mute(idx, !is_muted)?;
+                    Ok(Some(()))
+                } else {
+                    Ok(None)
+                }
+            }
+            Target::Any(targets) => {
+                for t in targets {
+                    if let Some(v) = t.toggle_muted(sink, source)? {
+                        return Ok(Some(v));
+                    }
+                }
+                Ok(None)
+            }
+            Target::All(_) => todo!(),
+        }
+    }
+
+    pub fn selected(
+        &self,
+        sink: &mut SinkController,
+        source: &mut SourceController,
+    ) -> Result<Option<bool>> {
+        match self {
+            Target::StaticSink(idx) => Ok(Some(sink.get_default_device()?.index == *idx)),
+            Target::StaticSource(idx) => Ok(Some(source.get_default_device()?.index == *idx)),
+            _ => Err(anyhow!(
+                "Only StaticSink/StaticSource can be used for DefaultSelect bindings"
+            )),
+        }
+    }
+
+    pub fn set_as_selected(
+        &self,
+        sink: &mut SinkController,
+        source: &mut SourceController,
+    ) -> Result<Option<()>> {
+        match self {
+            Target::StaticSink(idx) => {
+                let name = sink.get_device_by_index(*idx)?.name.ok_or_else(|| {
+                    anyhow!("Device must have a name to be set as default output")
+                })?;
+                sink.set_default_device(&name)?;
+                Ok(Some(()))
+            }
+            Target::StaticSource(idx) => {
+                let name = source
+                    .get_device_by_index(*idx)?
+                    .name
+                    .ok_or_else(|| anyhow!("Device must have a name to be set as default input"))?;
+                source.set_default_device(&name)?;
+                Ok(Some(()))
+            }
+            _ => Err(anyhow!(
+                "Only StaticSink/StaticSource can be used for DefaultSelect bindings"
+            )),
         }
     }
 }
 
-pub type TargetableResult = Result<Option<Target>>;
-
-#[clonable]
-pub trait Targetable: Clone {
-    fn get_target(
-        &self,
-        sink_controller: &mut SinkController,
-        source_controller: &mut SourceController,
-    ) -> TargetableResult;
-}
-
-#[derive(Clone)]
-pub struct StaticSink(u32);
-impl Targetable for StaticSink {
-    fn get_target(
-        &self,
-        sink_controller: &mut SinkController,
-        _source_controller: &mut SourceController,
-    ) -> TargetableResult {
-        let device = sink_controller.get_device_by_index(self.0)?;
-        Ok(Some(Target::DeviceSink(device)))
-    }
-}
-impl From<&DeviceInfo> for StaticSink {
-    fn from(d: &DeviceInfo) -> Self {
-        Self(d.index)
-    }
-}
-
-#[derive(Clone)]
-pub struct StaticSource(u32);
-impl Targetable for StaticSource {
-    fn get_target(
-        &self,
-        _sink_controller: &mut SinkController,
-        source_controller: &mut SourceController,
-    ) -> TargetableResult {
-        let device = source_controller.get_device_by_index(self.0)?;
-        Ok(Some(Target::DeviceSource(device)))
-    }
-}
-impl From<&DeviceInfo> for StaticSource {
-    fn from(d: &DeviceInfo) -> Self {
-        Self(d.index)
-    }
-}
-
-#[derive(Clone)]
-pub struct SinkWithProperty<'a>(&'a str, &'a str);
-impl SinkWithProperty<'_> {
-    fn find_app(&self, sink_controller: &mut SinkController) -> Result<Option<ApplicationInfo>> {
-        let apps = sink_controller.list_applications()?;
+impl Target {
+    fn find_app(
+        property: &str,
+        value: &str,
+        sink: &mut SinkController,
+    ) -> Result<Option<ApplicationInfo>> {
+        let apps = sink.list_applications()?;
         Ok(apps.into_iter().find(|app| {
             app.proplist
-                .get_str(self.0)
-                .filter(|v| self.1 == v)
+                .get_str(property)
+                .filter(|v| value == v)
                 .is_some()
         }))
-    }
-    pub fn app_name(name: &'static str) -> Box<Self> {
-        Box::new(SinkWithProperty(
-            pulse::proplist::properties::APPLICATION_NAME,
-            name,
-        ))
-    }
-    pub fn process_binary(name: &'static str) -> Box<Self> {
-        Box::new(SinkWithProperty(
-            pulse::proplist::properties::APPLICATION_PROCESS_BINARY,
-            name,
-        ))
-    }
-    pub fn media_name(name: &'static str) -> Box<Self> {
-        Box::new(SinkWithProperty(
-            pulse::proplist::properties::MEDIA_NAME,
-            name,
-        ))
-    }
-}
-impl Targetable for SinkWithProperty<'_> {
-    fn get_target(
-        &self,
-        sink_controller: &mut SinkController,
-        _source_controller: &mut SourceController,
-    ) -> TargetableResult {
-        let app = self.find_app(sink_controller)?;
-        Ok(app.map(|app| Target::AppSink(app)))
-    }
-}
-
-#[derive(Clone)]
-pub struct FirstValidTarget(Vec<Box<dyn Targetable>>);
-impl FirstValidTarget {
-    pub fn new(t: Vec<Box<dyn Targetable>>) -> Self {
-        FirstValidTarget(t)
-    }
-}
-impl Targetable for FirstValidTarget {
-    fn get_target(
-        &self,
-        sink_controller: &mut SinkController,
-        source_controller: &mut SourceController,
-    ) -> TargetableResult {
-        // We want to get the first non-None target but still propagate errors up
-        let first_valid = self
-            .0
-            .iter()
-            .map(|g| g.get_target(sink_controller, source_controller))
-            .filter(|g| g.is_err() || g.as_ref().unwrap().is_some())
-            .next();
-        match first_valid {
-            Some(r) => r,
-            None => Ok(None),
-        }
     }
 }
 
@@ -157,29 +219,5 @@ impl SinkControllerExt for SinkController {
         self.handler
             .wait_for_operation(op)
             .map_err(|_| anyhow!("Failed to set sink input volume"))
-    }
-}
-
-#[derive(Clone)]
-pub struct AlwaysNone {}
-impl Targetable for AlwaysNone {
-    fn get_target(
-        &self,
-        _sink_controller: &mut SinkController,
-        _source_controller: &mut SourceController,
-    ) -> TargetableResult {
-        return Ok(None);
-    }
-}
-
-#[derive(Clone)]
-pub struct AlwaysError {}
-impl Targetable for AlwaysError {
-    fn get_target(
-        &self,
-        _sink_controller: &mut SinkController,
-        _source_controller: &mut SourceController,
-    ) -> TargetableResult {
-        return Err(anyhow!("AlwaysError always errors"));
     }
 }

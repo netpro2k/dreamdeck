@@ -6,6 +6,9 @@ use core::time;
 
 use std::{collections::HashMap, thread};
 
+use pulse::proplist::properties::APPLICATION_NAME;
+use pulse::proplist::properties::APPLICATION_PROCESS_BINARY;
+use pulse::proplist::properties::MEDIA_NAME;
 use pulsectl::controllers::DeviceControl;
 use pulsectl::controllers::SinkController;
 use pulsectl::controllers::SourceController;
@@ -18,7 +21,7 @@ use binding::Binding;
 
 use deck::Deck;
 
-use target::*;
+use target::Target::*;
 
 const SPEAKER_SINK : &str = "alsa_output.usb-Apple__Inc._USB-C_to_3.5mm_Headphone_Jack_Adapter_DWH931705N1JKLTAL-00.analog-stereo";
 const HEADPHONE_SINK :&str = "alsa_output.usb-Apple__Inc._USB-C_to_3.5mm_Headphone_Jack_Adapter_DWH9317032QJKLTAR-00.analog-stereo";
@@ -42,53 +45,53 @@ fn make_config(
     // [40] [41] [42] [43] [44] [45] [46] [47]
 
     let mut bindings = HashMap::from([
-        (11, Binding::volume(StaticSink::from(&speakers))),
-        (12, Binding::volume(StaticSink::from(&headphones))),
+        (11, Binding::volume(StaticSink(speakers.index))),
+        (12, Binding::volume(StaticSink(headphones.index))),
         (
             13,
-            Binding::volume(FirstValidTarget::new(vec![
-                SinkWithProperty::app_name("WEBRTC VoiceEngine"), // Discord
-                SinkWithProperty::app_name("ZOOM VoiceEngine"),
+            Binding::volume(Any(vec![
+                SinkWithProperty(APPLICATION_NAME, "WEBRTC VoiceEngine"), // Discord
+                SinkWithProperty(APPLICATION_NAME, "ZOOM VoiceEngine"),
             ])),
         ),
         (
             14,
-            Binding::volume(FirstValidTarget::new(vec![
+            Binding::volume(Any(vec![
                 // TODO control multiple targets with 1 knob/button
                 //             sink_getter_all_by_property("application.name", "FINAL FANTASY XIV"),
-                SinkWithProperty::app_name("ALSA plug-in [wine64-preloader]"),
-                SinkWithProperty::app_name("Among Us.exe"),
-                SinkWithProperty::app_name("Spel2.exe"), // Spelunky 2
-                SinkWithProperty::app_name("FMOD Ex App"),
-                SinkWithProperty::app_name("Risk of Rain 2.exe"),
-                SinkWithProperty::process_binary("DyingLightGame"),
+                SinkWithProperty(APPLICATION_NAME, "ALSA plug-in [wine64-preloader]"),
+                SinkWithProperty(APPLICATION_NAME, "Among Us.exe"),
+                SinkWithProperty(APPLICATION_NAME, "Spel2.exe"), // Spelunky 2
+                SinkWithProperty(APPLICATION_NAME, "FMOD Ex App"),
+                SinkWithProperty(APPLICATION_NAME, "Risk of Rain 2.exe"),
+                SinkWithProperty(APPLICATION_PROCESS_BINARY, "DyingLightGame"),
                 // Generic games running under wine
-                SinkWithProperty::app_name("wine-preloader"),
-                SinkWithProperty::app_name("wine64-preloader"),
-                SinkWithProperty::process_binary("wine-preloader"),
-                SinkWithProperty::process_binary("wine64-preloader"),
+                SinkWithProperty(APPLICATION_NAME, "wine-preloader"),
+                SinkWithProperty(APPLICATION_NAME, "wine64-preloader"),
+                SinkWithProperty(APPLICATION_PROCESS_BINARY, "wine-preloader"),
+                SinkWithProperty(APPLICATION_PROCESS_BINARY, "wine64-preloader"),
                 // Steam Streaming
-                SinkWithProperty::process_binary("streaming_client"),
+                SinkWithProperty(APPLICATION_PROCESS_BINARY, "streaming_client"),
             ])),
         ),
         (
             15,
-            Binding::volume(FirstValidTarget::new(vec![
-                SinkWithProperty::app_name("Google Play Music Desktop Player"),
-                SinkWithProperty::app_name("mpv Media Player"),
+            Binding::volume(Any(vec![
+                SinkWithProperty(APPLICATION_NAME, "Google Play Music Desktop Player"),
+                SinkWithProperty(APPLICATION_NAME, "mpv Media Player"),
             ])),
         ),
         (
             16,
-            Binding::volume(*SinkWithProperty::media_name("Loopback of Onboard Audio")),
+            Binding::volume(SinkWithProperty(MEDIA_NAME, "Loopback of Onboard Audio")),
         ),
         (
             17,
-            Binding::volume(*SinkWithProperty::app_name("Moonlight")),
+            Binding::volume(SinkWithProperty(APPLICATION_NAME, "Moonlight")),
         ),
-        (32, Binding::select(StaticSink::from(&speakers))),
-        (33, Binding::select(StaticSink::from(&headphones))),
-        (34, Binding::mute(StaticSource::from(&mic))),
+        (32, Binding::select(StaticSink(speakers.index))),
+        (33, Binding::select(StaticSink(headphones.index))),
+        (34, Binding::mute(StaticSource(mic.index))),
     ]);
 
     // Bind the bottom row of buttons to mute the thing the knob in that column controls the volume of
