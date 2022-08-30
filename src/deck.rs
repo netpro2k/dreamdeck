@@ -110,8 +110,8 @@ impl Deck {
     pub fn handle_midi_message(&mut self, message: &[u8]) -> Result<()> {
         match message {
             [KNOB_UPDATE, knob, value] => self.knob_update(*knob, *value),
-            [BTN_DOWN, _btn, _value] => Ok(()),
-            [BTN_UP, btn, _value] => self.btn_press(*btn),
+            [BTN_DOWN, btn, _value] => self.btn_press(*btn),
+            [BTN_UP, _btn, _value] => Ok(()),
             _ => {
                 println!("Unknown message: {:?}", message);
                 Ok(())
