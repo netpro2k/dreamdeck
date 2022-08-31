@@ -9,7 +9,7 @@ edition = "2018"
 [dependencies]
 midir = "0.8.0"
 rust-pulsectl-fork = { git = "https://github.com/merll/pulsectl.git", branch = "fix-source-mute" }
-anyhow = "1.0.0"
+anyhow = { version = "1.0.0", features = ["backtrace"] }
 
 [dependencies.pulse]
 version = "2.22.0"

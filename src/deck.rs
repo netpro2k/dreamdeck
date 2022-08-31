@@ -50,8 +50,9 @@ impl Deck {
             match binding {
                 Binding::VolumeControl(target) => {
                     if let Some(vol) = target.volume(&mut self.sink, &mut self.source)? {
-                        let val: u8 = ((vol.0 * 128) / Volume::NORMAL.0) as u8;
-                        self.midi_out.send(&[KNOB_UPDATE, control, val])?;
+                        let val: u8 = ((vol.0 * 127) / Volume::NORMAL.0) as u8;
+                        self.midi_out
+                            .send(&[KNOB_UPDATE, control, val.clamp(0, 127)])?;
                     } else {
                         self.midi_out.send(&[KNOB_UPDATE, control, 0])?;
                     }
