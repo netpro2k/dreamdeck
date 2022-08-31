@@ -133,24 +133,24 @@ impl Target {
         &self,
         sink: &mut SinkController,
         source: &mut SourceController,
-    ) -> Result<Option<()>> {
+    ) -> Result<Option<bool>> {
         match self {
             Target::StaticSink(idx) => {
                 let is_muted = sink.get_device_by_index(*idx)?.mute;
                 sink.set_device_mute_by_index(*idx, !is_muted);
-                Ok(Some(()))
+                Ok(Some(!is_muted))
             }
             Target::StaticSource(idx) => {
                 let is_muted = source.get_device_by_index(*idx)?.mute;
                 source.set_device_mute_by_index(*idx, !is_muted);
-                Ok(Some(()))
+                Ok(Some(!is_muted))
             }
             Target::SinkWithProperty(p, v) => {
                 if let Some(app) = Self::find_app(p, v, sink)? {
                     let idx = app.index;
                     let is_muted = sink.get_app_by_index(idx)?.mute;
                     sink.set_app_mute(idx, !is_muted)?;
-                    Ok(Some(()))
+                    Ok(Some(!is_muted))
                 } else {
                     Ok(None)
                 }
@@ -166,7 +166,8 @@ impl Target {
             Target::All(targets) => targets
                 .iter()
                 .map(|t| t.toggle_muted(sink, source))
-                .collect(),
+                .reduce(|_, r| r)
+                .unwrap(),
         }
     }
 

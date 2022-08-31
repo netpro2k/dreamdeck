@@ -94,10 +94,21 @@ impl Deck {
     pub fn btn_press(&mut self, btn: u8) -> Result<()> {
         match self.bindings.get(&btn) {
             Some(MuteToggle(target)) => {
-                target.toggle_muted(&mut self.sink, &mut self.source)?;
+                if let Some(muted) = target.toggle_muted(&mut self.sink, &mut self.source)? {
+                    self.midi_out.send(&[BTN_DOWN, btn, muted.into()])?;
+                }
             }
             Some(DefaultSelect(target)) => {
-                target.set_as_selected(&mut self.sink, &mut self.source)?;
+                if let Some(_) = target.set_as_selected(&mut self.sink, &mut self.source)? {
+                    for (&c, binding) in &self.bindings {
+                        match binding {
+                            DefaultSelect(_) => {
+                                self.midi_out.send(&[BTN_DOWN, c, (c == btn).into()])?
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
             Some(VolumeControl(_getter)) => {
                 return Err(anyhow!("Buttons can not be bound to volume control"))
@@ -111,8 +122,8 @@ impl Deck {
     pub fn handle_midi_message(&mut self, message: &[u8]) -> Result<()> {
         match message {
             [KNOB_UPDATE, knob, value] => self.knob_update(*knob, *value),
-            [BTN_DOWN, btn, _value] => self.btn_press(*btn),
-            [BTN_UP, _btn, _value] => Ok(()),
+            [BTN_DOWN, _btn, _value] => Ok(()),
+            [BTN_UP, btn, _value] => self.btn_press(*btn),
             _ => {
                 println!("Unknown message: {:?}", message);
                 Ok(())

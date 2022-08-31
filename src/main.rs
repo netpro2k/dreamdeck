@@ -146,12 +146,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut deck = Deck::new(sink_controller, source_controller, midi_out, bindings);
     deck.clear()?;
 
+    // TODO there should be a way to get pulse to send us events instead of polling
     let _poll_thread = thread::spawn(move || {
         // thread code
         loop {
             tx.send(Msg::SyncBoard)
                 .expect("failed to send sync message to main thread");
-            thread::sleep(time::Duration::from_millis(100))
+            thread::sleep(time::Duration::from_millis(500))
         }
     });
 
